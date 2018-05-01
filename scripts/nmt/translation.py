@@ -28,6 +28,8 @@ from mxnet.gluon import nn
 import mxnet as mx
 from gluonnlp.model import BeamSearchScorer, BeamSearchSampler
 
+from s2sdata import BOS, EOS
+
 
 class NMTModel(Block):
     """Model for Neural Machine Translation.
@@ -73,7 +75,7 @@ class NMTModel(Block):
                  prefix=None, params=None):
         super(NMTModel, self).__init__(prefix=prefix, params=params)
         self.tgt_vocab = tgt_vocab
-        self.src_vocab = src_vocab
+        # self.src_vocab = src_vocab
         self.encoder = encoder
         self.decoder = decoder
         self._shared_embed = share_embed
@@ -84,14 +86,16 @@ class NMTModel(Block):
             warnings.warn('"share_embed" is turned on and \"tgt_embed\" is not None. '
                           'In this case, the provided "tgt_embed" will be overwritten by the '
                           '"src_embed". Is this intended?')
+        # import pdb; pdb.set_trace()
         if src_embed is None:
             assert embed_size is not None, '"embed_size" cannot be None if "src_embed" is not ' \
                                            'given.'
             with self.name_scope():
                 self.src_embed = nn.HybridSequential(prefix='src_embed_')
                 with self.src_embed.name_scope():
-                    self.src_embed.add(nn.Embedding(input_dim=len(src_vocab), output_dim=embed_size,
-                                                    weight_initializer=embed_initializer))
+                    # self.src_embed.add(nn.Embedding(input_dim=len(src_vocab), output_dim=embed_size,
+                    #                                 weight_initializer=embed_initializer))
+                    self.src_embed.add(nn.Dense(embed_size, flatten=False))
                     self.src_embed.add(nn.Dropout(rate=embed_dropout))
         else:
             self.src_embed = src_embed
@@ -231,7 +235,8 @@ class BeamSearchTranslator(object):
         self._sampler = BeamSearchSampler(
             decoder=self._decode_logprob,
             beam_size=beam_size,
-            eos_id=model.tgt_vocab.token_to_idx[model.tgt_vocab.eos_token],
+            # eos_id=model.tgt_vocab.token_to_idx[model.tgt_vocab.eos_token],
+            eos_id=model.tgt_vocab.word_to_id(EOS),
             scorer=scorer,
             max_length=max_length)
 
@@ -264,6 +269,7 @@ class BeamSearchTranslator(object):
         decoder_states = self._model.decoder.init_state_from_encoder(encoder_outputs,
                                                                      src_valid_length)
         inputs = mx.nd.full(shape=(batch_size,), ctx=src_seq.context, dtype=np.float32,
-                            val=self._model.tgt_vocab.token_to_idx[self._model.tgt_vocab.bos_token])
+                            val=self._model.tgt_vocab.word_to_id(BOS))
+                            # val=self._model.tgt_vocab.token_to_idx[self._model.tgt_vocab.bos_token])
         samples, scores, sample_valid_length = self._sampler(inputs, decoder_states)
         return samples, scores, sample_valid_length
