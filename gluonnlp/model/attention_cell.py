@@ -246,26 +246,32 @@ class MultiHeadAttentionCell(AttentionCell):
 
     def _compute_weight(self, F, query, key, mask=None):
         query = self.proj_query(query)  # Shape (batch_size, query_length, query_units)
-        # Shape (batch_size * num_heads, query_length, ele_units)
+        # query (batch_size * num_heads, query_length, ele_units)
         query = F.transpose(query.reshape(shape=(0, 0, self._num_heads, -1)),
                             axes=(0, 2, 1, 3))\
                  .reshape(shape=(-1, 0, 0), reverse=True)
         key = self.proj_key(key)
+        # key (batch_size * num_heads, memory_length, ele_units)
         key = F.transpose(key.reshape(shape=(0, 0, self._num_heads, -1)),
                           axes=(0, 2, 1, 3)).reshape(shape=(-1, 0, 0), reverse=True)
         if mask is not None:
+            # mask (batch_size * num_heads, query_length, memory_length)
             mask = F.broadcast_axis(F.expand_dims(mask, axis=1),
                                     axis=1, size=self._num_heads)\
                     .reshape(shape=(-1, 0, 0), reverse=True)
         att_weights = self._base_cell._compute_weight(F, query, key, mask)
+        # (batch_size, num_heads, query_length, memory_length)
         return att_weights.reshape(shape=(-1, self._num_heads, 0, 0), reverse=True)
 
     def _read_by_weight(self, F, att_weights, value):
         att_weights = att_weights.reshape(shape=(-1, 0, 0), reverse=True)
         value = self.proj_value(value)
+        # value (batch_size * num_heads, memory_length, value_ele_units)
         value = F.transpose(value.reshape(shape=(0, 0, self._num_heads, -1)),
                             axes=(0, 2, 1, 3)).reshape(shape=(-1, 0, 0), reverse=True)
         context_vec = self._base_cell._read_by_weight(F, att_weights, value)
+        # (batch_size * num_heads, query_length, context_dim) -> (batch_size, query_length,
+        # num_heads*context_dim)
         context_vec = F.transpose(context_vec.reshape(shape=(-1, self._num_heads, 0, 0),
                                                       reverse=True),
                                   axes=(0, 2, 1, 3)).reshape(shape=(0, 0, -1))
@@ -358,6 +364,8 @@ class MLPAttentionCell(AttentionCell):
     def _compute_weight(self, F, query, key, mask=None):
         mapped_query = self._query_mid_layer(query)
         mapped_key = self._key_mid_layer(key)
+        # Query vector. Shape (batch_size, query_length, query_dim)
+        # Key of the memory. Shape (batch_size, memory_length, key_dim)
         mid_feat = F.broadcast_add(F.expand_dims(mapped_query, axis=2),
                                    F.expand_dims(mapped_key, axis=1))
         mid_feat = self._act(mid_feat)

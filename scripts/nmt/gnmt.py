@@ -68,15 +68,19 @@ parser = argparse.ArgumentParser(description='Neural Machine Translation Example
                                              'We train the Google NMT model')
 parser.add_argument('--train_dataset', type=str, default='train_si284', help='Train dataset to use.')
 parser.add_argument('--val_dataset', type=str, default='dev_93', help='Validation dataset to use.')
-parser.add_argument('--src_lang', type=str, default='en', help='Source language')
-parser.add_argument('--tgt_lang', type=str, default='vi', help='Target language')
+parser.add_argument('--feature_file', type=str, default='cmvn_by_len_2.scp', help='Feature file.')
+parser.add_argument('--label_file', type=str, default='labels', help='Label file.')
+parser.add_argument('--reverse', type=str, default='false', help='Reverse source features')
+parser.add_argument('--attention', type=str, default='dot', help='Attention type')
 parser.add_argument('--epochs', type=int, default=40, help='upper epoch limit')
 parser.add_argument('--num_hidden', type=int, default=128, help='Dimension of the embedding '
                                                                 'vectors and states.')
 parser.add_argument('--dropout', type=float, default=0.2,
                     help='dropout applied to layers (0 = no dropout)')
-parser.add_argument('--num_layers', type=int, default=2, help='number of layers in the encoder'
-                                                              ' and decoder')
+parser.add_argument('--num_encoder_layers', type=int, default=2, help='number of layers in the encoder')
+parser.add_argument('--num_decoder_layers', type=int, default=1, help='number of layers in the decoder')
+parser.add_argument('--input_halved_layers', type=str, default='', help='layers whose input lengths '
+                                                                       'are halved')
 parser.add_argument('--num_bi_layers', type=int, default=1,
                     help='number of bidirectional layers in the encoder and decoder')
 parser.add_argument('--batch_size', type=int, default=128, help='Batch size')
@@ -113,21 +117,21 @@ logging_config(args.save_dir)
 
 num_workers = 1
 
-train_data = S2SData(os.path.join("data/"+ args.train_dataset, "cmvn_by_len_2.scp"),
-                     os.path.join("data/"+ args.train_dataset, "labels"),
+train_data = S2SData(os.path.join("data/"+ args.train_dataset, args.feature_file),
+                     os.path.join("data/"+ args.train_dataset, args.label_file),
                      None,
                      min_seq_length=0, max_seq_length=args.src_max_len,
                      max_label_length=args.tgt_max_len, filter_str=".",
                      left_context=args.left_context, right_context=args.right_context,
-                     sub_sample=args.sub_sample, layout='NTC')
+                     sub_sample=args.sub_sample, layout='NTC', reverse=args.reverse)
 pickle.dump(train_data.dict(), open(os.path.join(args.save_dir, 'dict'), 'wb'))
-val_data = S2SData(os.path.join("data/" + args.val_dataset, "cmvn_by_len_2.scp"),
-                   os.path.join("data/" + args.val_dataset, "labels"),
+val_data = S2SData(os.path.join("data/" + args.val_dataset, args.feature_file),
+                   os.path.join("data/" + args.val_dataset, args.label_file),
                    os.path.join(args.save_dir, 'dict'),
                    min_seq_length=0, max_seq_length=args.src_max_len,
                    max_label_length=args.tgt_max_len, filter_str=".",
                    left_context=args.left_context, right_context=args.right_context,
-                   sub_sample=args.sub_sample, layout='NTC')
+                   sub_sample=args.sub_sample, layout='NTC', reverse=args.reverse)
 
 train_loader = DataLoader(train_data, batch_size=args.batch_size, batchify_fn=train_data.batchify,
                           num_workers=num_workers)
@@ -142,8 +146,11 @@ else:
 
 encoder, decoder = get_gnmt_encoder_decoder(hidden_size=args.num_hidden,
                                             dropout=args.dropout,
-                                            num_layers=args.num_layers,
-                                            num_bi_layers=args.num_bi_layers)
+                                            num_encoder_layers=args.num_encoder_layers,
+                                            num_decoder_layers=args.num_decoder_layers,
+                                            num_bi_layers=args.num_bi_layers,
+                                            input_halved_layers=args.input_halved_layers,
+                                            attention_cell=args.attention)
 # model = NMTModel(src_vocab=src_vocab, tgt_vocab=tgt_vocab, encoder=encoder, decoder=decoder,
 #                  embed_size=args.num_hidden, prefix='gnmt_')
 
@@ -272,7 +279,7 @@ def train():
                 loss = loss_function(out, tgt_seq[:, 1:], tgt_valid_length - 1).mean()
                 loss = loss * (tgt_seq.shape[1] - 1) / (tgt_valid_length - 1).mean()
                 loss.backward()
-            grads = [p.grad(ctx) for p in model.collect_params().values()]
+            grads = [p.grad(ctx) for p in model.collect_params().values() if p.grad_req != 'null']
             gnorm = gluon.utils.clip_global_norm(grads, args.clip)
             trainer.step(1)
             src_wc = src_valid_length.sum().asscalar()

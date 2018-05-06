@@ -1,17 +1,24 @@
 python gnmt.py --train_dataset train_si284 \
                --val_dataset test_dev93 \
+               --label_file labels_char \
+               --attention scaled_luong \
                --left_context 1 \
                --right_context 1 \
                --sub_sample 2 \
                --batch_size 32 \
                --src_max_len 1600 \
-               --tgt_max_len 150 \
-               --num_layers 2 \
+               --tgt_max_len 200 \
+               --num_encoder_layers 6 \
+               --num_decoder_layers 6 \
+               --num_bi_layers 3 \
+               --input_halved_layers 1 \
                --optimizer adam \
                --lr 0.001 \
-               --lr_update_factor 0.5 \
+               --lr_update_factor 0.8 \
                --beam_size 10 \
-               --num_hidden 1024 \
-               --save_dir model_3 \
+               --num_hidden 320 \
+               --save_dir model_13 \
                --epochs 40 \
-               --gpu 0   
+               --gpu 5
+
+Epoch 5 reaches accuracy of 87.97% for grapheme AM outputs. Note that the BLSTM-CTC has accuracy of 88.31%.

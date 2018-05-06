@@ -72,7 +72,7 @@ class S2SData(Dataset):
     def __init__(self, scp_file, label_file=None, dict_file=None, min_seq_length=None, max_seq_length=None,
                  max_label_length=None,
                  filter_str='.', left_context=0, right_context=0, sub_sample=1, context_pad=True, random_pad=False,
-                 layout='TNC'):
+                 layout='TNC', reverse='False'):
         """
         Constructs a Dataset object for kaldi generated data. default output layout is 'TNC', 'TN' for labels.
         The layout of the scp file should be key, data:(seq length).
@@ -106,6 +106,7 @@ class S2SData(Dataset):
         self._context_pad = context_pad
         self._random_pad = random_pad
         self._layout = layout
+        self._reverse = reverse
 
         output_tokens = []
         if label_file and label_file is not '':
@@ -211,6 +212,8 @@ class S2SData(Dataset):
 
         # labels = [None for i in range(len(inputs))]
         for i, seq in enumerate(inputs):
+            if self._reverse.lower() == 'true':
+                seq = np.flip(seq, axis=0)
             pad_len = max_data_len - seq.shape[0]
             if self._random_pad:
                 head_pad = int(random() * pad_len)

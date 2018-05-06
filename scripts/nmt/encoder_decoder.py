@@ -25,7 +25,8 @@ import mxnet as mx
 from mxnet.base import _as_list
 from mxnet.gluon import nn, rnn
 from mxnet.gluon.block import Block, HybridBlock
-from gluonnlp.model import AttentionCell, MLPAttentionCell, DotProductAttentionCell
+from gluonnlp.model import AttentionCell, MLPAttentionCell, DotProductAttentionCell, MultiHeadAttentionCell
+import numpy as np
 
 
 def _list_bcast_where(F, mask, new_val_l, old_val_l):
@@ -85,6 +86,7 @@ def _get_attention_cell(attention_cell, units=None):
     -------
     attention_cell : AttentionCell
     """
+    # import pdb; pdb.set_trace()
     if isinstance(attention_cell, str):
         if attention_cell == 'scaled_luong':
             return DotProductAttentionCell(units=units, scaled=True, normalized=False,
@@ -101,6 +103,12 @@ def _get_attention_cell(attention_cell, units=None):
             return MLPAttentionCell(units=units, normalized=False)
         elif attention_cell == 'normed_mlp':
             return MLPAttentionCell(units=units, normalized=True)
+        elif attention_cell == 'MultiHeadAttentionCell':
+            attention_cell = MLPAttentionCell(units=units, normalized=False)
+            # return MultiHeadAttentionCell(base_cell=attention_cell, query_units=units, key_units=units, value_units=units, num_heads=4)
+            return MultiHeadAttentionCell(base_cell=attention_cell, query_units=units, key_units=units, value_units=units,
+                                      num_heads=4)
+
         else:
             raise NotImplementedError
     else:
@@ -274,7 +282,8 @@ class GNMTEncoder(Seq2SeqEncoder):
         Container for weight sharing between cells.
         Created if `None`.
     """
-    def __init__(self, cell_type='lstm', num_layers=2, num_bi_layers=1, hidden_size=128,
+    def __init__(self, cell_type='lstm', num_layers=2, num_bi_layers=1,
+                 input_halved_layers='',hidden_size=128,
                  dropout=0.0, use_residual=True,
                  i2h_weight_initializer=None, h2h_weight_initializer=None,
                  i2h_bias_initializer='zeros', h2h_bias_initializer='zeros',
@@ -289,6 +298,9 @@ class GNMTEncoder(Seq2SeqEncoder):
         self._hidden_size = hidden_size
         self._dropout = dropout
         self._use_residual = use_residual
+        self._input_halved_layers = map(int, input_halved_layers.split(','))
+        print("encoder layers: %d", num_layers)
+        print("input_halved_layers:", self._input_halved_layers)
         with self.name_scope():
             self.dropout_layer = nn.Dropout(dropout)
             self.rnn_cells = nn.HybridSequential()
@@ -341,11 +353,17 @@ class GNMTEncoder(Seq2SeqEncoder):
 
     def forward(self, inputs, states=None, valid_length=None):  #pylint: disable=arguments-differ
         # TODO(sxjscience) Accelerate the forward using HybridBlock
-        _, length, _ = inputs.shape
+        # _, length, _ = inputs.shape
         new_states = []
         outputs = inputs
         for i, cell in enumerate(self.rnn_cells):
+            if i in self._input_halved_layers:
+                # print("halve input length for layer:%d" % i)
+                inputs = self.halve_input_length(inputs)
+                valid_length = (valid_length / 2).ceil()
             begin_state = None if states is None else states[i]
+            # import pdb; pdb.set_trace()
+            _, length, _ = inputs.shape
             outputs, layer_states = cell.unroll(
                 length=length, inputs=inputs, begin_state=begin_state, merge_outputs=True,
                 valid_length=valid_length, layout='NTC')
@@ -364,6 +382,16 @@ class GNMTEncoder(Seq2SeqEncoder):
             outputs = mx.nd.SequenceMask(outputs, sequence_length=valid_length,
                                          use_sequence_length=True, axis=1)
         return [outputs, new_states]
+
+    def halve_input_length(self, input_sequence):
+        if (input_sequence.shape[1] % 2 != 0):
+            # input_sequence = input_sequence.pad(mode="edge", pad_width=(0,0,0,1,0,0))
+            input_sequence = mx.nd.concat(input_sequence,
+                                          mx.nd.zeros((input_sequence.shape[0], 1, input_sequence.shape[2]),
+                                                      ctx=input_sequence.context), dim=1)
+
+        return input_sequence.reshape(0, input_sequence.shape[1]//2, -1)
+
 
 
 class GNMTDecoder(HybridBlock, Seq2SeqDecoder):
@@ -410,6 +438,7 @@ class GNMTDecoder(HybridBlock, Seq2SeqDecoder):
         super(GNMTDecoder, self).__init__(prefix=prefix, params=params)
         self._cell_type = _get_cell_type(cell_type)
         self._num_layers = num_layers
+        print("decoder layers:%d", num_layers)
         self._hidden_size = hidden_size
         self._dropout = dropout
         self._use_residual = use_residual
@@ -466,6 +495,7 @@ class GNMTDecoder(HybridBlock, Seq2SeqDecoder):
         attention_output_l = []
         fixed_states = states[2:]
         for i in range(length):
+            # import pdb; pdb.set_trace()
             ele_output, states, ele_additional_outputs = self.forward(inputs[i], states)
             rnn_states_l.append(states[0])
             attention_output_l.append(states[1])
@@ -547,6 +577,7 @@ class GNMTDecoder(HybridBlock, Seq2SeqDecoder):
 
         """
         has_mem_mask = (len(states) == 4)
+        # import pdb; pdb.set_trace()
         if has_mem_mask:
             rnn_states, attention_output, mem_value, mem_masks = states
             mem_masks = F.expand_dims(mem_masks, axis=1)
@@ -584,8 +615,11 @@ class GNMTDecoder(HybridBlock, Seq2SeqDecoder):
         return rnn_out, new_states, step_additional_outputs
 
 
-def get_gnmt_encoder_decoder(cell_type='lstm', attention_cell='scaled_luong', num_layers=2,
-                             num_bi_layers=1, hidden_size=128, dropout=0.0, use_residual=True,
+def get_gnmt_encoder_decoder(cell_type='lstm', attention_cell='scaled_luong',
+                             num_encoder_layers=2,
+                             num_decoder_layers=1,
+                             num_bi_layers=1, input_halved_layers='',
+                             hidden_size=128, dropout=0.0, use_residual=True,
                              i2h_weight_initializer=None, h2h_weight_initializer=None,
                              i2h_bias_initializer='zeros', h2h_bias_initializer='zeros',
                              prefix='gnmt_', params=None):
@@ -612,7 +646,8 @@ def get_gnmt_encoder_decoder(cell_type='lstm', attention_cell='scaled_luong', nu
     encoder : GNMTEncoder
     decoder : GNMTDecoder
     """
-    encoder = GNMTEncoder(cell_type=cell_type, num_layers=num_layers, num_bi_layers=num_bi_layers,
+    encoder = GNMTEncoder(cell_type=cell_type, num_layers=num_encoder_layers, num_bi_layers=num_bi_layers,
+                          input_halved_layers=input_halved_layers,
                           hidden_size=hidden_size, dropout=dropout,
                           use_residual=use_residual,
                           i2h_weight_initializer=i2h_weight_initializer,
@@ -620,7 +655,7 @@ def get_gnmt_encoder_decoder(cell_type='lstm', attention_cell='scaled_luong', nu
                           i2h_bias_initializer=i2h_bias_initializer,
                           h2h_bias_initializer=h2h_bias_initializer,
                           prefix=prefix + 'enc_', params=params)
-    decoder = GNMTDecoder(cell_type=cell_type, attention_cell=attention_cell, num_layers=num_layers,
+    decoder = GNMTDecoder(cell_type=cell_type, attention_cell=attention_cell, num_layers=num_decoder_layers,
                           hidden_size=hidden_size, dropout=dropout,
                           use_residual=use_residual,
                           i2h_weight_initializer=i2h_weight_initializer,
