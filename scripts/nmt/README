@@ -21,4 +21,4 @@ python gnmt.py --train_dataset train_si284 \
                --epochs 40 \
                --gpu 5
 
-Epoch 5 reaches accuracy of 87.97% for grapheme AM outputs. Note that the BLSTM-CTC has accuracy of 88.31%.
+Epoch 15 reaches accuracy of 90.35% for grapheme AM outputs, which outperforms the best CTC model we had before (88.31%).
