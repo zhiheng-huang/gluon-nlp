@@ -43,6 +43,7 @@ import os
 import random
 import time
 import warnings
+import GPUtil
 
 import numpy as np
 import mxnet as mx
@@ -465,7 +466,7 @@ def evaluate():
 
     elapse_feature_extraction = time.time() - start_time
     tic = time.time()
-    for data in dev_dataloader:
+    for i, data in enumerate(dev_dataloader):
         current_time = time.time()
         example_ids, inputs, token_types, valid_length, _, _ = data
 
@@ -487,21 +488,15 @@ def evaluate():
             context_len.append(inputs.shape[1])
             inf_time.append(batch_time)
 
+    for gpu_id in mx.test_utils.list_gpus():
+        log.info('GPU[{}] memory used {} MB'.format(gpu_id, GPUtil.getGPUs()[gpu_id].memoryUsed))
+
     log.info('Get prediction results...')
 
     toc = time.time()
     log.info('Inference time cost={:.2f} s, Thoughput={:.2f} samples/s'
              .format(toc - tic,
                      len(dev_dataloader) / (toc - tic)))
-
-    all_predictions, all_nbest_json, scores_diff_json = predictions(
-        dev_dataset=dev_dataset,
-        all_results=all_results,
-        tokenizer=nlp.data.BasicTokenizer(lower_case=lower_case),
-        max_answer_length=max_answer_length,
-        null_score_diff_threshold=null_score_diff_threshold,
-        n_best_size=n_best_size,
-        version_2=version_2)
 
     elapse = time.time() - start_time
     log.info("Question average len = {}".format(sum(q_len) / float(len(q_len))))
@@ -511,6 +506,7 @@ def evaluate():
     log.info("Elapsed = {} ms".format(elapse * 1000))
     log.info("Feature extraction time {}".format(elapse_feature_extraction * 1000))
     log.info("total samples {}".format(len(dev_data_transform)))
+    log.info("total batchs {}".format(len(dev_dataloader)))
     log.info(
       "Average inference time per batch {} ms".format(elapse * 1000 * args.test_batch_size / len(dev_data_transform)))
     log.info("Average inference time per batch {} ms (excluding feature extraction)".format(
@@ -522,6 +518,15 @@ def evaluate():
       with open(args.latency_report_file,'w', encoding='utf-8') as report_write:
           for l, t in zip(context_len, inf_time):
               report_write.write("{} {}\n".format(l, t))
+
+    all_predictions, all_nbest_json, scores_diff_json = predictions(
+        dev_dataset=dev_dataset,
+        all_results=all_results,
+        tokenizer=nlp.data.BasicTokenizer(lower_case=lower_case),
+        max_answer_length=max_answer_length,
+        null_score_diff_threshold=null_score_diff_threshold,
+        n_best_size=n_best_size,
+        version_2=version_2)
 
     with open(os.path.join(output_dir, 'predictions.json'),
               'w', encoding='utf-8') as all_predictions_write:
