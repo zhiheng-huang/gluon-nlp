@@ -316,7 +316,7 @@ class BaseTransformerEncoder(HybridBlock):
                  weight_initializer=None, bias_initializer='zeros',
                  positional_weight='sinusoidal', use_bert_encoder=False,
                  use_layer_norm_before_dropout=False, scale_embed=True,
-                 prefix=None, params=None):
+                 prefix=None, params=None, fp=None):
         super(BaseTransformerEncoder, self).__init__(prefix=prefix, params=params)
         assert units % num_heads == 0,\
             'In TransformerEncoder, The units should be divided exactly ' \
@@ -333,6 +333,7 @@ class BaseTransformerEncoder(HybridBlock):
         self._scaled = scaled
         self._use_layer_norm_before_dropout = use_layer_norm_before_dropout
         self._scale_embed = scale_embed
+        self._fp = fp
         with self.name_scope():
             self.dropout_layer = nn.Dropout(dropout)
             self.layer_norm = _get_layer_norm(use_bert_encoder, units)
@@ -399,7 +400,7 @@ class BaseTransformerEncoder(HybridBlock):
         C_in = int(os.environ['INPUTSIZE'])
         if valid_length is not None:
             mask = F.broadcast_lesser(
-                F.arange(length).reshape((1, -1)),
+                F.arange(length, dtype=self._fp).reshape((1, -1)),
                 valid_length.reshape((-1, 1)))
             mask = F.broadcast_axes(F.expand_dims(mask, axis=1), axis=1, size=length)
             if states is None:

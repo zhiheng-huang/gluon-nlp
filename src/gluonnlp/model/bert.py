@@ -150,7 +150,7 @@ class BERTEncoder(BaseTransformerEncoder):
                  num_heads=4, scaled=True, dropout=0.0,
                  use_residual=True, output_attention=False,
                  weight_initializer=None, bias_initializer='zeros',
-                 prefix=None, params=None):
+                 prefix=None, params=None, fp=None):
         super(BERTEncoder, self).__init__(attention_cell=attention_cell,
                                           num_layers=num_layers, units=units,
                                           hidden_size=hidden_size, max_length=max_length,
@@ -164,7 +164,8 @@ class BERTEncoder(BaseTransformerEncoder):
                                           positional_weight='learned',
                                           use_bert_encoder=True,
                                           use_layer_norm_before_dropout=False,
-                                          scale_embed=False)
+                                          scale_embed=False,
+                                          fp=fp)
 
 class BERTEncoderCell(BaseTransformerEncoderCell):
     """Structure of the Transformer Encoder Cell for BERT.
@@ -407,7 +408,8 @@ class BERTModel(HybridBlock):
 
         This is used for pre-training or fine-tuning a BERT model.
         """
-        outputs = sequence[:, 0, :]
+        # outputs = sequence[:, 0, :]
+        outputs = mx.symbol.slice(sequence, begin=(None, 0, None), end=(None, 1, None))
         return self.pooler(outputs)
 
     def _decode(self, sequence, masked_positions):
@@ -595,7 +597,8 @@ def _bert_model(model_name=None, dataset_name=None, vocab=None, pretrained=True,
                           num_heads=predefined_args['num_heads'],
                           scaled=predefined_args['scaled'],
                           dropout=predefined_args['dropout'],
-                          use_residual=predefined_args['use_residual'])
+                          use_residual=predefined_args['use_residual'],
+                          fp=predefined_args['fp'])
     # vocab
     vocab = _load_vocab(dataset_name, vocab, root)
     # BERT

@@ -72,7 +72,8 @@ class SQuAD(ArrayDataset):
     """
 
     def __init__(self, segment='train', version='1.1',
-                 root=os.path.join('~', '.mxnet', 'datasets', 'squad')):
+                 root=os.path.join('~', '.mxnet', 'datasets', 'squad'),
+                 max_examples=0, context_factor=1):
         self._data_file = {'1.1': {'train': (('train-v1.1.zip',
                                               '052a75bf8fdb3e843b8649971658eae8133f9b0e'),
                                              ('train-v1.1.json',
@@ -98,6 +99,8 @@ class SQuAD(ArrayDataset):
         self._root = root
         self._segment = segment
         self._version = version
+        self._max_examples = max_examples
+        self._context_factor = context_factor
         self._get_data()
 
         super(SQuAD, self).__init__(self._read_data())
@@ -140,10 +143,10 @@ class SQuAD(ArrayDataset):
         with open(os.path.join(self._root, data_file_name)) as f:
             samples = json.load(f)
 
-        return SQuAD._get_records(samples)
+        return SQuAD._get_records(samples, self._max_examples, self._context_factor)
 
     @staticmethod
-    def _get_records(json_dict):
+    def _get_records(json_dict, max_examples, context_factor):
         """Provides a list of tuples with records where answers are flatten
 
         :param dict, json_dict: File content loaded into json dictionary
@@ -166,15 +169,19 @@ class SQuAD(ArrayDataset):
                     if is_impossible is not None:
                         record = (
                             record_index, qas['id'], qas['question'],
-                            paragraph['context'], answers[0], answers[1], is_impossible
+                            context_factor * paragraph['context'], answers[0], answers[1], is_impossible
                         )
                     else:
                         record = (
                             record_index, qas['id'], qas['question'],
-                            paragraph['context'], answers[0], answers[1])
+                            context_factor * paragraph['context'], answers[0], answers[1])
 
                     record_index += 1
                     records.append(record)
+
+                    # for debug purpose
+                    if max_examples > 0 and record_index == max_examples:
+                        return records
 
         return records
 

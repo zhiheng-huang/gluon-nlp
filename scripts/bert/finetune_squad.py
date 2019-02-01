@@ -194,11 +194,35 @@ parser.add_argument('--input_size',
                     type=int,
                     default=768,
                     help='The embedding size of the input')
+parser.add_argument("--max_examples",
+                    type=int,
+                    default=0,
+                    help="maximum examples used for training or inference")
+parser.add_argument("--context_factor",
+                    type=int,
+                    default=1,
+                    help="context factor used to simulate long context")
+parser.add_argument('--model_symbol_file',
+                    type=str,
+                    default=None,
+                    help='BERT-qa model symbol file')
+parser.add_argument('--latency_report_file',
+                    type=str,
+                    default=None,
+                    help='Latency report file')
+parser.add_argument('--fp16',
+                    action='store_true',
+                    help="Whether to use 16-bit float precision instead of 32-bit")
+parser.add_argument('--hybridize',
+                    action='store_true',
+                    help="Whether to hybridize models")
 
 args = parser.parse_args()
 
 os.environ['SEQLENGTH'] = str(args.seq_length)
 os.environ['INPUTSIZE'] = str(args.input_size)
+
+float_str = 'float16' if args.fp16 else 'float32'
 
 output_dir = args.output_dir
 if not os.path.exists(output_dir):
@@ -258,19 +282,25 @@ bert, vocab = nlp.model.get_model(
     ctx=ctx,
     use_pooler=False,
     use_decoder=False,
-    use_classifier=False)
+    use_classifier=False,
+    fp=float_str)
 
 berttoken = nlp.data.BERTTokenizer(vocab=vocab, lower_case=lower_case)
 
 net = BertForQA(bert=bert)
-if not model_parameters:
-    net.classifier.initialize(init=mx.init.Normal(0.02), ctx=ctx)
-else:
+if args.model_symbol_file and model_parameters: # symbol model loading
+    net = gluon.nn.SymbolBlock.imports(args.model_symbol_file, ['data0','data1','data2'], model_parameters, ctx=ctx)
+elif model_parameters:
     net.load_parameters(model_parameters, ctx=ctx)
-net.hybridize(static_alloc=True, static_shape=True)
+else:
+  net.classifier.initialize(init=mx.init.Normal(0.02), ctx=ctx)
+net.cast(float_str)
+if args.hybridize:
+    net.hybridize(static_alloc=True, static_shape=True)
 
 loss_function = BertForQALoss()
-loss_function.hybridize(static_alloc=True, static_shape=True)
+if args.hybridize:
+    loss_function.hybridize(static_alloc=True, static_shape=True)
 
 
 def train():
@@ -278,9 +308,9 @@ def train():
 
     log.info('Loader Train data...')
     if version_2:
-        train_data = SQuAD('train', version='2.0')
+      train_data = SQuAD('train', version='2.0', max_examples=args.max_examples, context_factor=args.context_factor)
     else:
-        train_data = SQuAD('train', version='1.1')
+      train_data = SQuAD('train', version='1.1', max_examples=args.max_examples, context_factor=args.context_factor)
     log.info('Number of records in Train data:{}'.format(len(train_data)))
 
     train_data_transform = preprocess_dataset(train_data, SQuADTransform(
@@ -350,13 +380,14 @@ def train():
             with mx.autograd.record():
                 _, inputs, token_types, valid_length, start_label, end_label = data
 
-                out = net(inputs.astype('float32').as_in_context(ctx),
-                          token_types.astype('float32').as_in_context(ctx),
-                          valid_length.astype('float32').as_in_context(ctx))
+                out = net(inputs.astype(float_str).as_in_context(ctx),
+                          token_types.astype(float_str).as_in_context(ctx),
+                          valid_length.astype(float_str).as_in_context(ctx))
 
                 ls = loss_function(out, [
-                    start_label.astype('float32').as_in_context(ctx),
-                    end_label.astype('float32').as_in_context(ctx)]).mean()
+                    start_label.astype(float_str).as_in_context(ctx),
+                    end_label.astype(float_str).as_in_context(ctx)]).mean()
+
             ls.backward()
             # update
             if not accumulate or (batch_id + 1) % accumulate == 0:
@@ -379,18 +410,30 @@ def train():
                  .format(epoch_id, epoch_toc - epoch_tic,
                          len(train_dataloader)/(epoch_toc - epoch_tic)))
         net.save_parameters(os.path.join(output_dir, 'net_parameters'))
+        ## save to symbol json file
+        net.export(os.path.join(output_dir, 'bertqa'), epoch=epoch_id)
         evaluate()
 
 
 def evaluate():
     """Evaluate the model on validation dataset.
     """
+    start_time = time.time()
     log.info('Loader dev data...')
     if version_2:
-        dev_data = SQuAD('dev', version='2.0')
+      dev_data = SQuAD('dev', version='2.0', max_examples=args.max_examples, context_factor=args.context_factor)
     else:
-        dev_data = SQuAD('dev', version='1.1')
-    log.info('Number of records in Train data:{}'.format(len(dev_data)))
+      dev_data = SQuAD('dev', version='1.1', max_examples=args.max_examples, context_factor=args.context_factor)
+    log.info('Number of records in Dev data:{}'.format(len(dev_data)))
+
+    # producing inference stats
+    context_len = []
+    inf_time = []
+    q_len = []
+    d_len = []
+    for example in dev_data:
+      q_len.append(len(example[2].split()))
+      d_len.append(len(example[3].split()))
 
     dev_dataset = dev_data.transform(
         SQuADTransform(
@@ -414,21 +457,21 @@ def evaluate():
         batchify_fn=bert_qa_batchify_fn,
         num_workers=4, shuffle=False, last_batch='keep')
 
-    start_logits = []
-    end_logits = []
     log.info('Start predict')
 
     _Result = collections.namedtuple(
         '_Result', ['example_id', 'start_logits', 'end_logits'])
     all_results = {}
 
+    elapse_feature_extraction = time.time() - start_time
     tic = time.time()
     for data in dev_dataloader:
+        current_time = time.time()
         example_ids, inputs, token_types, valid_length, _, _ = data
 
-        out = net(inputs.astype('float32').as_in_context(ctx),
-                  token_types.astype('float32').as_in_context(ctx),
-                  valid_length.astype('float32').as_in_context(ctx))
+        out = net(inputs.astype(float_str).as_in_context(ctx),
+                  token_types.astype(float_str).as_in_context(ctx),
+                  valid_length.astype(float_str).as_in_context(ctx))
 
         output = nd.split(out, axis=2, num_outputs=2)
         start_logits = output[0].reshape((0, -3)).asnumpy()
@@ -440,6 +483,10 @@ def evaluate():
                 all_results[example_id] = []
             all_results[example_id].append(
                 _Result(example_id, start.tolist(), end.tolist()))
+            batch_time = (time.time() - current_time) * 1000
+            context_len.append(inputs.shape[1])
+            inf_time.append(batch_time)
+
     log.info('Get prediction results...')
 
     toc = time.time()
@@ -455,6 +502,26 @@ def evaluate():
         null_score_diff_threshold=null_score_diff_threshold,
         n_best_size=n_best_size,
         version_2=version_2)
+
+    elapse = time.time() - start_time
+    log.info("Question average len = {}".format(sum(q_len) / float(len(q_len))))
+    log.info("Doc average len = {}".format(sum(d_len) / float(len(d_len))))
+    log.info("Context average len = {}".format(sum(context_len) / float(len(context_len))))
+    log.info("Inf time average = {}".format(sum(inf_time) / float(len(inf_time))))
+    log.info("Elapsed = {} ms".format(elapse * 1000))
+    log.info("Feature extraction time {}".format(elapse_feature_extraction * 1000))
+    log.info("total samples {}".format(len(dev_data_transform)))
+    log.info(
+      "Average inference time per batch {} ms".format(elapse * 1000 * args.test_batch_size / len(dev_data_transform)))
+    log.info("Average inference time per batch {} ms (excluding feature extraction)".format(
+      (elapse - elapse_feature_extraction) * 1000 * args.test_batch_size / len(dev_data_transform)))
+    for p in [0, 50, 90, 99, 100]:
+      t = np.percentile(np.array(inf_time), p, axis=0)
+      log.info("{}th percentile of inference time per query is {} ms".format(p, t))
+    if args.latency_report_file:
+      with open(args.latency_report_file,'w', encoding='utf-8') as report_write:
+          for l, t in zip(context_len, inf_time):
+              report_write.write("{} {}\n".format(l, t))
 
     with open(os.path.join(output_dir, 'predictions.json'),
               'w', encoding='utf-8') as all_predictions_write:
